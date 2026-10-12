@@ -686,6 +686,10 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
   const previewRootRef = useRef<HTMLDivElement | null>(null);
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
+  const canEditView = useCallback((view: EditorView) => editableRef.current
+    && viewRef.current === view && !view.state.facet(EditorState.readOnly), []);
   const [encryptedRegion, setEncryptedRegion] = useState<{ source?: string; initialContent?: { plaintext: string; format: "markdown" }; commit: (source: string) => void } | null>(null);
   useEffect(() => { setEncryptedRegion(null); }, [note.id]);
   const openEncryptedRegion = () => {
@@ -697,7 +701,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       if (!block && !selection.empty) {
         const selected = prepareMarkdownSelectionEncryption(view, historyCompartmentRef.current);
         setEncryptedRegion({ initialContent: selected, commit: (source) => {
-          if (noteRef.current.id !== noteId || viewRef.current !== view || noteRef.current.isTrashed) throw new Error("Encrypted selection changed");
+          if (noteRef.current.id !== noteId || !canEditView(view) || noteRef.current.isTrashed) throw new Error("Encrypted selection changed");
           selected.commit(source);
           collabUndoManagerRef.current?.clear();
         } });
@@ -738,9 +742,9 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       toast.error(detail.error || tr("tiptap.attachmentUploadFailed") || "Attachment upload failed");
     }
   }), [tr]);
-  const pasteNoteScopeRef = useRef({ id: note.id, revision: 0 });
-  if (pasteNoteScopeRef.current.id !== note.id) {
-    pasteNoteScopeRef.current = { id: note.id, revision: pasteNoteScopeRef.current.revision + 1 };
+  const pasteNoteScopeRef = useRef({ id: note.id, editable, revision: 0 });
+  if (pasteNoteScopeRef.current.id !== note.id || pasteNoteScopeRef.current.editable !== editable) {
+    pasteNoteScopeRef.current = { id: note.id, editable, revision: pasteNoteScopeRef.current.revision + 1 };
   }
   const asyncPasteAnchorsRef = useRef(new Set<{ from: number; to: number }>());
   const onUpdateRef = useRef(onUpdate);
@@ -882,20 +886,20 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
   /** AI ���������ݲ��뵽��ǰѡ��β�� */
   const handleAIInsert = useCallback((text: string) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
     const { to } = view.state.selection.main;
     view.dispatch({
       changes: { from: to, to, insert: text },
     });
     queueMicrotask(() => view.focus());
-  }, []);
+  }, [canEditView]);
 
   /** AI �����������滻��ǰѡ�� */
   const handleAIReplace = useCallback((text: string) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
     replaceSelection(view, text);
-  }, []);
+  }, [canEditView]);
 
   const openTaskCapture = useCallback(() => {
     const view = viewRef.current;
@@ -940,19 +944,19 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
 
   const openAttachmentLibrary = useCallback(() => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
     const selection = view.state.selection.main;
     attachmentLibrarySelectionRef.current = {
       from: selection.from,
       to: selection.to,
     };
     setAttachmentLibraryOpen(true);
-  }, [editable]);
+  }, [canEditView]);
 
   const insertExistingAttachment = useCallback((item: FileItem) => {
     const view = viewRef.current;
     const selection = attachmentLibrarySelectionRef.current;
-    if (!view || !selection || selection.to > view.state.doc.length) {
+    if (!view || !canEditView(view) || !selection || selection.to > view.state.doc.length) {
       closeAttachmentLibrary();
       toast.error(tr("tiptap.attachmentInsertPositionLost", { defaultValue: "插入位置已失效，请重试" }));
       return;
@@ -969,7 +973,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     closeAttachmentLibrary();
     queueMicrotask(() => view.focus());
     toast.success(tr("tiptap.attachmentLinkInserted", { defaultValue: "附件链接已插入" }));
-  }, [closeAttachmentLibrary, tr]);
+  }, [closeAttachmentLibrary, tr, canEditView]);
 
   // slash 菜单项：基础 Markdown、附件、AI 与日期日记命令共享同一个 CodeMirror 菜单。
   const openVoiceRecorder = useCallback(() => {
@@ -983,13 +987,13 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       noteId,
       release: () => asyncPasteAnchorsRef.current.delete(anchor),
       insert: (attachment) => {
-        if (noteRef.current.id !== noteId || noteRef.current.isTrashed || viewRef.current !== view || pasteNoteScopeRef.current !== scope || !view.state.facet(EditorView.editable)) return false;
+        if (noteRef.current.id !== noteId || noteRef.current.isTrashed || !canEditView(view) || pasteNoteScopeRef.current !== scope || !view.state.facet(EditorView.editable)) return false;
         const snippet = `\n\n${voiceMemoHtml(attachment)}\n\n`;
         view.dispatch({ changes: { from: anchor.from, to: anchor.to, insert: snippet }, selection: { anchor: anchor.from + snippet.length } });
         return true;
       },
     });
-  }, [editable, isGuest]);
+  }, [editable, isGuest, canEditView]);
 
   const insertVoiceTranscript = useCallback((text: string) => {
     const view = viewRef.current;
@@ -1020,8 +1024,9 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
   /** 上传图片文件到 /api/attachments 或图床，插入 Markdown 图片语法 */
   const insertImageFromFile = useCallback((file: File) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
     const currentNote = noteRef.current;
+    const scope = pasteNoteScopeRef.current;
     const alt = file.name.replace(/\.[^.]+$/, "");
     if (currentNote?.id) {
       // 优先走图床，失败时回退本地附件
@@ -1031,7 +1036,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
         currentNote.id,
         (url) => {
           const v = viewRef.current;
-          if (v) insertImage(v, url, alt);
+          if (v === view && canEditView(view) && pasteNoteScopeRef.current === scope) insertImage(view, url, alt);
         },
         "markdown",
       ).catch((err) => {
@@ -1041,7 +1046,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
         reader.onload = () => {
           const src = reader.result;
           const v = viewRef.current;
-          if (typeof src === "string" && v) insertImage(v, src, alt);
+          if (typeof src === "string" && v === view && canEditView(view) && pasteNoteScopeRef.current === scope) insertImage(view, src, alt);
         };
         reader.readAsDataURL(file);
       });
@@ -1050,15 +1055,15 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       const reader = new FileReader();
       reader.onload = () => {
         const src = reader.result;
-        if (typeof src === "string") insertImage(view, src, alt);
+        if (typeof src === "string" && canEditView(view) && pasteNoteScopeRef.current === scope) insertImage(view, src, alt);
       };
       reader.readAsDataURL(file);
     }
-  }, []);
+  }, [canEditView]);
 
   const triggerImagePicker = useCallback(() => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
     const noteId = noteRef.current.id;
     const scope = pasteNoteScopeRef.current;
     const anchor = { from: view.state.selection.main.from, to: view.state.selection.main.to };
@@ -1071,13 +1076,13 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     input.addEventListener("cancel", releaseAnchor, { once: true });
     input.onchange = () => {
       const files = Array.from(input.files || []);
-      if (!files.length || viewRef.current !== view || pasteNoteScopeRef.current !== scope) { releaseAnchor(); return; }
+      if (!files.length || !canEditView(view) || pasteNoteScopeRef.current !== scope) { releaseAnchor(); return; }
       if (!noteId) { toast.error("请先创建笔记，再上传照片"); releaseAnchor(); return; }
       toast.info(tr("tiptap.imageUploading"));
       void uploadPhotoSelection(noteId, files)
         .then((photos) => {
           // 复用异步粘贴锚点映射，上传完成后恢复原选区；切换笔记则不插入。
-          if (viewRef.current !== view || pasteNoteScopeRef.current !== scope) return;
+          if (!canEditView(view) || pasteNoteScopeRef.current !== scope) return;
           view.dispatch({ selection: { anchor: anchor.from, head: anchor.to } });
           for (const photo of photos) insertImage(view, photo.url, photo.filename.replace(/\.[^.]+$/, ""));
           toast.success(tr("tiptap.imageUploadSuccess"));
@@ -1086,9 +1091,12 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
         .finally(releaseAnchor);
     };
     input.click();
-  }, [editable, tr]);
+  }, [tr, canEditView]);
 
   const insertVideoFromFile = useCallback((file: File, source: "editor" | "paste" | "drag-drop" = "editor") => {
+    const view = viewRef.current;
+    if (!view || !canEditView(view)) return;
+    const scope = pasteNoteScopeRef.current;
     const currentNote = noteRef.current;
     if (!currentNote?.id) {
       toast.error(tr("tiptap.attachmentUploadFailed") || "Attachment upload failed");
@@ -1103,7 +1111,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     })
       .then((result) => {
         const v = viewRef.current;
-        if (!v) return;
+        if (v !== view || !canEditView(view) || pasteNoteScopeRef.current !== scope) return;
         replaceSelection(v, buildMarkdownVideoSnippet(result));
       })
       .catch((err: any) => {
@@ -1115,11 +1123,11 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
           toast.error(tr("tiptap.attachmentUploadFailed") || "Attachment upload failed");
         }
       });
-  }, [tr]);
+  }, [tr, canEditView]);
 
   const triggerVideoPicker = useCallback(() => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "video/*";
@@ -1133,7 +1141,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       insertVideoFromFile(file, "editor");
     };
     input.click();
-  }, [editable, insertVideoFromFile, tr]);
+  }, [insertVideoFromFile, tr, canEditView]);
 
   /**
    * �����ʽ�����ϴ� �� �� Markdown ��ǰ��괦���룺
@@ -1145,7 +1153,8 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
    */
   const insertAttachmentFromFile = useCallback((file: File) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
+    const scope = pasteNoteScopeRef.current;
     const currentNote = noteRef.current;
     if (!currentNote?.id) {
       toast.error(tr("tiptap.attachmentUploadFailed") || "Attachment upload failed");
@@ -1156,7 +1165,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       .upload(currentNote.id, file)
       .then((res) => {
         const v = viewRef.current;
-        if (!v) return;
+        if (v !== view || !canEditView(view) || pasteNoteScopeRef.current !== scope) return;
         if (res.category === "image") {
           insertImage(v, res.url, file.name.replace(/\.[^.]+$/, ""));
         } else {
@@ -1178,11 +1187,11 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
           toast.error(tr("tiptap.attachmentUploadFailed") || "Attachment upload failed");
         }
       });
-  }, [tr]);
+  }, [tr, canEditView]);
 
   const triggerAttachmentPicker = useCallback(() => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
     const input = document.createElement("input");
     input.type = "file";
     // ���� accept�������ʽ
@@ -1191,14 +1200,14 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       if (file) insertAttachmentFromFile(file);
     };
     input.click();
-  }, [editable, insertAttachmentFromFile]);
+  }, [insertAttachmentFromFile, canEditView]);
 
 
   // ---------- �����߼� ----------
 
   const emitSave = useCallback(() => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
     const md = view.state.doc.toString();
     const plain = markdownToPlainText(md);
     const title = isTitleComposingRef.current
@@ -1216,7 +1225,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     } else {
       onUpdateRef.current({ content: md, contentText: plain, title, _noteId: noteRef.current.id });
     }
-  }, []);
+  }, [canEditView]);
 
   const scheduleSave = useCallback(() => {
     if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -1240,6 +1249,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
   }, [emitSave, tr]);
 
   const emitTitleUpdate = useCallback(() => {
+    if (!editableRef.current) return;
     const title = titleRef.current?.value || "";
     const noteTitle = noteRef.current.title;
     if (!shouldEmitTitleUpdate({
@@ -1262,6 +1272,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     ref,
     () => ({
       flushSave: () => {
+        if (!editableRef.current) return;
         const title = isTitleComposingRef.current
           ? noteRef.current.title
           : titleRef.current?.value || noteRef.current.title;
@@ -1310,7 +1321,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       isReady: () => !!viewRef.current,
       insertMarkdownAtCursor: (md: string) => {
         const view = viewRef.current;
-        if (!view) return false;
+        if (!view || !canEditView(view)) return false;
         try {
           const selection = view.state.selection.main;
           const from = selection.from;
@@ -1326,14 +1337,14 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       },
       appendMarkdown: (md: string) => {
         const view = viewRef.current;
-        if (!view) return false;
+        if (!view || !canEditView(view)) return false;
         try {
           view.dispatch({ changes: { from: view.state.doc.length, insert: md } });
           return true;
         } catch { return false; }
       },
     }),
-    [emitSave],
+    [emitSave, canEditView],
   );
 
   // ---------- ���ι��أ����� EditorView ----------
@@ -1383,22 +1394,24 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       if (isSettingContent.current) return;
 
       const text = update.state.doc.toString();
-      onLocalUpdateRef.current?.({
-        title: noteRef.current.title,
-        content: text,
-        _noteId: noteRef.current.id,
-      });
+      if (editableRef.current) {
+        onLocalUpdateRef.current?.({
+          title: noteRef.current.title,
+          content: text,
+          _noteId: noteRef.current.id,
+        });
+      }
       setWordStats(computeStats(text));
       onHeadingsChangeRef.current?.(extractHeadings(update.view));
       // Encrypted regions use the normal ciphertext save path; Yjs rejects them.
-      if (!collabEnabledRef.current || /nowen-encrypted/i.test(text)) {
+      if (editableRef.current && (!collabEnabledRef.current || /nowen-encrypted/i.test(text))) {
         scheduleSave();
       }
 
       const cursor = update.state.selection.main.head;
       const line = update.state.doc.lineAt(cursor);
       const activeWiki = detectActiveWikiNoteQuery(line.text.slice(0, cursor - line.from), cursor, line.from);
-      if (activeWiki) {
+      if (editableRef.current && activeWiki) {
         const coords = update.view.coordsAtPos(cursor);
         if (coords) setNoteLinkMenu({ open: true, position: { top: coords.bottom + 8, left: coords.left }, query: activeWiki.query, from: activeWiki.from, to: activeWiki.to });
       } else {
@@ -1520,7 +1533,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
         // ���� + �ɱ༭���أ��� Compartment ��̬�л���
         baseTheme,
         themeCompartmentRef.current.of(isDarkMode() ? oneDark : []),
-        editableCompartmentRef.current.of(EditorView.editable.of(editable)),
+        editableCompartmentRef.current.of([EditorView.editable.of(editable), EditorState.readOnly.of(!editable)]),
         searchPhraseCompartmentRef.current.of(markdownSearchPhrases(i18n.resolvedLanguage || i18n.language)),
         searchPanelTheme,
 
@@ -1547,7 +1560,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
         // ͼƬ / ���� ճ�� & ��ק���� TiptapEditor ��Ϊ����
         EditorView.domEventHandlers({
           click(event, view) {
-            if (!editable) return false;
+            if (!editableRef.current) return false;
             const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
             if (typeof pos !== "number") return false;
 
@@ -1565,7 +1578,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
             return true;
           },
           paste(event) {
-            if (!editable) return false;
+            if (!editableRef.current) return false;
             // 1) 视频文件优先走 Markdown 视频语法
             const items = event.clipboardData?.items;
             if (items) {
@@ -1630,19 +1643,19 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
                   });
                   if (choice === null) return;
                   if (choice === "keep-remote") {
-                    if (viewRef.current === view && pasteNoteScopeRef.current === scope) {
+                    if (canEditView(view) && pasteNoteScopeRef.current === scope) {
                       asyncPasteAnchorsRef.current.delete(anchor);
                       view.dispatch({ changes: { from: anchor.from, to: anchor.to, insert: pastedText }, selection: { anchor: anchor.from + pastedText.length } });
                     }
                     return;
                   }
                 }
-                if (viewRef.current !== view || pasteNoteScopeRef.current !== scope) return;
+                if (!canEditView(view) || pasteNoteScopeRef.current !== scope) return;
                 const progressToastId = toast.info(tr("settings.remoteImagePasteProgress", { done: 0, total: remoteImages.length }), 0);
                 const results = await localizeRemoteImages(
                   remoteImages.map((image) => image.originalUrl), scope.id, "paste",
                 ).finally(() => toast.dismiss(progressToastId));
-                if (viewRef.current !== view || pasteNoteScopeRef.current !== scope) return;
+                if (!canEditView(view) || pasteNoteScopeRef.current !== scope) return;
                 const saved = results.filter((result) => result.success).length;
                 const replacements = new Map(results.filter((result) => result.success).map((result) => [result.originalUrl, result.localUrl]));
                 const preparedText = replaceRemoteUrlsInMarkdown(pastedText, replacements);
@@ -1651,7 +1664,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
                 const message = tr("settings.remoteImagePasteResult", { saved, failed: results.length - saved });
                 if (saved === results.length) toast.success(message); else toast.warning(message);
               } catch {
-                if (viewRef.current === view && pasteNoteScopeRef.current === scope) {
+                if (canEditView(view) && pasteNoteScopeRef.current === scope) {
                   asyncPasteAnchorsRef.current.delete(anchor);
                   view.dispatch({ changes: { from: anchor.from, to: anchor.to, insert: pastedText }, selection: { anchor: anchor.from + pastedText.length } });
                   toast.warning(tr("settings.remoteImagePasteResult", { saved: 0, failed: remoteImages.length }));
@@ -1663,7 +1676,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
             return true;
           },
           drop(event) {
-            if (!editable) return false;
+            if (!editableRef.current) return false;
             const files = event.dataTransfer?.files;
             if (!files || files.length === 0) return false;
             event.preventDefault();
@@ -1887,10 +1900,17 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     if (!view) return;
     view.dispatch({
       effects: editableCompartmentRef.current.reconfigure(
-        EditorView.editable.of(editable)
+        [EditorView.editable.of(editable), EditorState.readOnly.of(!editable)]
       ),
     });
-  }, [editable]);
+    if (!editable) {
+      setNoteLinkMenu((current) => ({ ...current, open: false }));
+      setSlashState(emptySlashState);
+      setAiOpen(false);
+      setEncryptedRegion(null);
+      closeAttachmentLibrary();
+    }
+  }, [editable, closeAttachmentLibrary]);
 
   // ---------- ������� <html class="dark"> �л� ----------
 
@@ -2079,7 +2099,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
 
   const handlePreviewTaskCheckboxChange = useCallback((taskIndex: number, checked: boolean) => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
 
     const currentMarkdown = view.state.doc.toString();
     const change = getMarkdownTaskCheckboxChange(currentMarkdown, taskIndex, checked);
@@ -2090,27 +2110,29 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
       changes: { from: change.from, to: change.to, insert: change.insert },
     });
     setPreviewMarkdown(nextMarkdown);
-  }, [editable]);
+  }, [canEditView]);
 
   const handlePreviewCodeBlockFormat = useCallback(async (source: string, offset: number) => {
     const view = viewRef.current;
-    if (!view || !editable) return;
+    if (!view || !canEditView(view)) return;
+    const scope = pasteNoteScopeRef.current;
     const { formatMarkdownCodeBlock } = await import("@/lib/markdownCodeBlockFormatting");
+    if (!canEditView(view) || pasteNoteScopeRef.current !== scope) return;
     await formatMarkdownCodeBlock(view, source, offset);
     setPreviewMarkdown(view.state.doc.toString());
-  }, [editable]);
+  }, [canEditView]);
 
   const handlePreviewEncryptedBlockEdit = useCallback((source: string, rendered: string, offset: number) => {
     const view = viewRef.current; const noteId = note.id;
-    if (!view || !editable || isGuest || note.isTrashed) throw new Error("Encrypted region is read-only");
+    if (!view || !canEditView(view) || isGuest || note.isTrashed) throw new Error("Encrypted region is read-only");
     const region = prepareMarkdownEncryptedRegionEdit(view, source, rendered, offset);
     // Keep the private dialog outside the preview tree so a refreshed preview cannot discard edits.
     setEncryptedRegion({ source: region.source, commit: (ciphertext: string) => {
-      if (noteRef.current.id !== noteId || viewRef.current !== view) throw new Error("Encrypted region changed");
+      if (noteRef.current.id !== noteId || !canEditView(view)) throw new Error("Encrypted region changed");
       region.commit(ciphertext);
       setPreviewMarkdown(view.state.doc.toString());
     } });
-  }, [editable, isGuest, note.id, note.isTrashed]);
+  }, [isGuest, note.id, note.isTrashed, canEditView]);
 
   // ---------- ��ǩ�仯 ----------
 
@@ -2120,9 +2142,9 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
 
   const withView = useCallback((fn: (v: EditorView) => void) => {
     const v = viewRef.current;
-    if (!v) return;
+    if (!v || !canEditView(v)) return;
     fn(v);
-  }, []);
+  }, [canEditView]);
 
   const openMarkdownSearch = useCallback(() => {
     setMobileToolbarExpanded(false);
@@ -2173,7 +2195,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     options?: NoteLinkSelectionOptions,
   ) => {
     const view = viewRef.current;
-    if (!view) return;
+    if (!view || !canEditView(view)) return;
     const alias = options?.alias?.trim() || "";
     const syntax = buildWikiNoteLink(targetNote.id, block?.blockId, alias);
     view.dispatch({
@@ -2182,7 +2204,7 @@ export default forwardRef<NoteEditorHandle, MarkdownEditorProps>(function Markdo
     });
     setNoteLinkMenu((previous) => ({ ...previous, open: false }));
     queueMicrotask(() => view.focus());
-  }, [noteLinkMenu.from, noteLinkMenu.to]);
+  }, [noteLinkMenu.from, noteLinkMenu.to, canEditView]);
 
   useEffect(() => {
     const jump = async (blockId: string) => {

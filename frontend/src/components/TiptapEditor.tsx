@@ -4,7 +4,7 @@ import { EmojiSuggestionList } from "./EmojiSuggestionList";
 import RichTextBlockControls from "./RichTextBlockControls";
 import { getSlashEditorId } from "./extensions/SlashCommandExtension";
 import "./dragHandle.css";
-import React, { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import React, { forwardRef, lazy, Suspense, useCallback, useContext, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Keyboard } from "@capacitor/keyboard";
 import { sanitizeForPaste } from "@/lib/sanitizeHtml";
@@ -53,6 +53,7 @@ import {
   recordPhaseAPerfEvent,
 } from "@/lib/phaseAPerfDiagnostics";
 import { publishEditorEditable } from "@/lib/editorEditableStore";
+import { RichTextReadOnlyGuard } from "@/lib/richTextReadOnlyGuard";
 import { EditorRevisionGuard } from "@/lib/editorRevisionGuard";
 import {
   isMatchingTiptapSaveAck,
@@ -1031,6 +1032,8 @@ function createKeyboardExtension(flushSaveRef: React.MutableRefObject<() => void
 }
 
 
+const ToolbarEditableContext = React.createContext(true);
+
 interface ToolbarButtonProps {
   onClick: () => void;
   isActive?: boolean;
@@ -1039,9 +1042,12 @@ interface ToolbarButtonProps {
   title?: string;
   compact?: boolean;
   className?: string;
+  readOnlySafe?: boolean;
 }
 
-function ToolbarButton({ onClick, isActive, disabled, children, title, compact, className }: ToolbarButtonProps) {
+function ToolbarButton({ onClick, isActive, disabled, children, title, compact, className, readOnlySafe }: ToolbarButtonProps) {
+  const toolbarEditable = useContext(ToolbarEditableContext);
+  disabled = disabled || (!toolbarEditable && !readOnlySafe);
   return (
     <button
       type="button"
@@ -1895,6 +1901,8 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
   const outlineScrollRequestRef = useRef(0);
   // 防止 setContent 触发 onUpdate 导致无限循环
   const isSettingContent = useRef(false);
+  // Only the synchronous content refresh may bypass the read-only transaction guard.
+  const isApplyingContent = useRef(false);
   // 保持最新的 note ref，避免闭包引用过期
   const noteRef = useRef(note);
   noteRef.current = note;
@@ -1907,9 +1915,9 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
       toast.error(detail.error || t("tiptap.videoUploadFailed") || "Video upload failed");
     }
   }), [t]);
-  const pasteNoteScopeRef = useRef({ id: note.id, revision: 0 });
-  if (pasteNoteScopeRef.current.id !== note.id) {
-    pasteNoteScopeRef.current = { id: note.id, revision: pasteNoteScopeRef.current.revision + 1 };
+  const pasteNoteScopeRef = useRef({ id: note.id, editable, revision: 0 });
+  if (pasteNoteScopeRef.current.id !== note.id || pasteNoteScopeRef.current.editable !== editable) {
+    pasteNoteScopeRef.current = { id: note.id, editable, revision: pasteNoteScopeRef.current.revision + 1 };
   }
   // 保持最新的 onUpdate ref
   const onUpdateRef = useRef(onUpdate);
@@ -1971,6 +1979,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     shouldRerenderOnTransaction: false,
     extensions: [
       keyboardExtension.current,
+      RichTextReadOnlyGuard.configure({ isApplyingContent: () => isApplyingContent.current }),
       StarterKit.configure({
         codeBlock: false,
         underline: false,
@@ -2941,7 +2950,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     },
     onUpdate: ({ editor }) => {
       // setContent 触发的 onUpdate 不应该保存（防止死循环）
-      if (isSettingContent.current) return;
+      if (isSettingContent.current || !editor.isEditable) return;
 
       const onUpdateStartedAt = performance.now();
       const scheduledNoteId = noteRef.current.id;
@@ -2999,7 +3008,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
       debounceTimer.current = setTimeout(() => {
         debounceTimer.current = null;
         // 再次校验 noteId 未变化（切换笔记时 debounce 会被清理，这里是双重保险）
-        if (editor.isDestroyed || editor.view.composing || !editorRevisionGuardRef.current.isCurrent(
+        if (editor.isDestroyed || !editor.isEditable || editor.view.composing || !editorRevisionGuardRef.current.isCurrent(
           revisionToken,
           noteRef.current.id,
           editor,
@@ -3169,7 +3178,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
 
     // 实现 flushSave：Ctrl/Cmd+S 触发，绕过 500ms debounce 立即保存
   flushSaveRef.current = () => {
-    if (!editor) return;
+    if (!editor || !editor.isEditable) return;
     if (debounceTimer.current) {
       clearTimeout(debounceTimer.current);
       debounceTimer.current = null;
@@ -3373,7 +3382,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     ref,
     () => ({
       flushSave: () => {
-        if (!editor) return;
+        if (!editor || !editor.isEditable) return;
         const title = isTitleComposingRef.current
           ? noteRef.current.title
           : titleRef.current?.value || noteRef.current.title;
@@ -3434,14 +3443,14 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
       },
       isReady: () => !!editor && !editor.isDestroyed,
       insertMarkdownAtCursor: (md: string) => {
-        if (!editor || editor.isDestroyed) return false;
+        if (!editor || editor.isDestroyed || !editor.isEditable) return false;
         try {
           const html = mdToFullHtml(md);
           return insertContentPreservingBlockEmbed(editor, html);
         } catch { return false; }
       },
       appendMarkdown: (md: string) => {
-        if (!editor || editor.isDestroyed) return false;
+        if (!editor || editor.isDestroyed || !editor.isEditable) return false;
         try {
           const html = mdToFullHtml(md);
           const docEnd = editor.state.doc.content.size;
@@ -3568,7 +3577,12 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
         const previousSelection = editor.state.selection;
         // 标记正在设置内容，阻止 onUpdate 触发保存
         isSettingContent.current = true;
-        editor.commands.setContent(parsed, { emitUpdate: false });
+        isApplyingContent.current = true;
+        try {
+          editor.commands.setContent(parsed, { emitUpdate: false });
+        } finally {
+          isApplyingContent.current = false;
+        }
         try {
           const docSize = editor.state.doc.content.size;
           const from = Math.max(0, Math.min(previousSelection.from, docSize));
@@ -4023,8 +4037,14 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
   // 动态切换编辑器的可编辑状态
   useEffect(() => {
     if (editor) {
-      editor.setEditable(editable);
+      editor.setEditable(editable, false);
       publishEditorEditable(editor);
+      if (!editable) {
+        setShowAI(false);
+        setEncryptedRegion(null);
+        setAttachmentLibraryOpen(false);
+        setNoteLinkMenu((current) => ({ ...current, open: false }));
+      }
     }
   }, [editor, editable]);
 
@@ -4682,6 +4702,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
   }, [editor]);
 
   const emitTitleUpdate = useCallback(() => {
+    if (!editor?.isEditable) return;
     const title = titleRef.current?.value || "";
     const noteTitle = noteRef.current.title;
     if (!shouldEmitTitleUpdate({
@@ -4693,7 +4714,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     }
     lastEmittedTitleRef.current = title;
     onUpdateRef.current({ title, _noteId: noteRef.current.id });
-  }, []);
+  }, [editor]);
 
   const handleTitleBlur = useCallback(() => {
     if (shouldSkipTitleChange({
@@ -5465,6 +5486,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
       .run();
   };
   return (
+    <ToolbarEditableContext.Provider value={editable}>
     <div
       data-mobile-editing-compact={compactMobileEditing ? "true" : "false"}
       data-format-painter-active={formatPainterArmed ? "true" : "false"}
@@ -5533,7 +5555,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
             </ToolbarButton>
           </div>
           <MobileEditorToolbarSlot location="trailing" />
-          <ToolbarButton compact onClick={() => setMobileToolbarExpanded((value) => !value)} isActive={mobileToolbarExpanded} title={t('common.more')}>
+          <ToolbarButton readOnlySafe compact onClick={() => setMobileToolbarExpanded((value) => !value)} isActive={mobileToolbarExpanded} title={t('common.more')}>
             <ChevronDown size={16} className={cn("transition-transform", mobileToolbarExpanded && "rotate-180")} />
           </ToolbarButton>
         </div>
@@ -5635,9 +5657,11 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
         >
           <Strikethrough size={iconSize} />
         </ToolbarButton>
-        <FontSizePopover editor={editor} iconSize={iconSize} />
-        <LineHeightPopover editor={editor} iconSize={iconSize} />
-        <ColorPopover editor={editor} iconSize={iconSize} />
+        <fieldset disabled={!editable} className="contents disabled:opacity-30">
+          <FontSizePopover key={`font-${editable}`} editor={editor} iconSize={iconSize} />
+          <LineHeightPopover key={`line-${editable}`} editor={editor} iconSize={iconSize} />
+          <ColorPopover key={`color-${editable}`} editor={editor} iconSize={iconSize} />
+        </fieldset>
         <ToolbarButton
           onClick={toggleFormatPainter}
           isActive={formatPainterArmed}
@@ -5733,14 +5757,18 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
         <ToolbarButton className="max-md:hidden" onClick={handleVideoUpload} title={t('tiptap.uploadLocalVideo')}>
           <Upload size={iconSize} />
         </ToolbarButton>
-        <VoiceInsertMenu onUpload={handleAttachmentUpload} onRecord={openVoiceRecorder} recordDisabled={!editable || isGuest || !!note.isTrashed} iconSize={iconSize} />
+        <fieldset key={`attachment-${editable}`} disabled={!editable} className="contents">
+          <VoiceInsertMenu onUpload={handleAttachmentUpload} onRecord={openVoiceRecorder} recordDisabled={!editable || isGuest || !!note.isTrashed} iconSize={iconSize} />
+        </fieldset>
         <ToolbarButton
           onClick={openAttachmentLibrary}
           title={t("tiptap.insertExistingAttachment", { defaultValue: "从文件管理插入" })}
         >
           <FolderSearch size={iconSize} />
         </ToolbarButton>
-        <TableGridPicker iconSize={iconSize} onPick={insertTable} />
+        <fieldset key={`table-${editable}`} disabled={!editable} className="contents">
+          <TableGridPicker iconSize={iconSize} onPick={insertTable} />
+        </fieldset>
         <ToolbarButton onClick={insertMermaid} title={t('tiptap.insertMermaid')}>
           <Workflow size={iconSize} />
         </ToolbarButton>
@@ -5840,6 +5868,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
 
         <span className="hidden md:inline-flex">
           <ToolbarButton
+            readOnlySafe
             onClick={() => setSearchOpen((v) => !v)}
             isActive={searchOpen}
             title={t('searchReplace.toolbarTitle') || '查找替换 (Ctrl+F)'}
@@ -5889,6 +5918,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
           <>
             <ToolbarDivider />
             <ToolbarButton
+              readOnlySafe
               onClick={openTaskCapture}
               title={t("tasks.quickCaptureToInbox", { defaultValue: "快速捕获到收集箱" })}
             >
@@ -6107,6 +6137,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
             <>
               <div className="w-px h-4 bg-app-border mx-0.5" />
               <ToolbarButton
+                readOnlySafe
                 onClick={openTaskCapture}
                 title={t("tasks.quickCaptureToInbox", { defaultValue: "快速捕获到收集箱" })}
               >
@@ -6970,6 +7001,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
 
       {/* 移动端工具栏已迁移到主 Toolbar 之后，参考下方 mobileToolbarItems 渲染处 */}
     </div>
+    </ToolbarEditableContext.Provider>
   );
 });
 

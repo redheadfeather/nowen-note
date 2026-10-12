@@ -47,6 +47,7 @@ import {
 } from "@/components/knowledgeTreeImport";
 import { choose, confirm, prompt } from "@/components/ui/confirm";
 import { useContextMenu } from "@/hooks/useContextMenu";
+import { useNoteLoader } from "@/hooks/useNoteLoader";
 import { useMobileSidebarControlsCollapsed } from "@/hooks/useMobileSidebarControlsCollapsed";
 import { useSidebarTextStyle } from "@/hooks/useSidebarTextStyle";
 import { api } from "@/lib/api";
@@ -321,6 +322,7 @@ export function KnowledgeTreePanel({
   const { t } = useTranslation();
   const { state } = useApp();
   const actions = useAppActions();
+  const { loadNote } = useNoteLoader();
   const activeMindMapId = useSyncExternalStore(subscribeMindMapAppPath, getCurrentMindMapAppId, () => null);
   const [mobileControlsCollapsed] = useMobileSidebarControlsCollapsed();
   const [sidebarTextStyle] = useSidebarTextStyle();
@@ -736,11 +738,18 @@ export function KnowledgeTreePanel({
       if (variant === "mobile") actions.setMobileSidebar(false);
       return;
     }
-    try {
-      activateNote(await api.getNote(node.resourceId), node.parentId);
-    } catch (requestError: any) {
-      toast.error(requestError?.message || "打开文档失败");
-    }
+    // A directory click is a new navigation intent, including a return to the
+    // source retired by a body link. Keep stale editor callbacks guarded and
+    // let the shared coordinator discard superseded directory requests.
+    await loadNote({
+      noteId: node.resourceId,
+      summary: { title: node.title, notebookId: "", contentFormat: node.contentFormat || undefined },
+      request: () => api.getNote(node.resourceId),
+      onSuccess: (note) => activateNote(note, node.parentId),
+      onError: (requestError) => {
+        toast.error(requestError instanceof Error ? requestError.message : "打开文档失败");
+      },
+    });
   };
 
   const handleNodeSelection = (event: React.MouseEvent, node: KnowledgeTreeNode) => {

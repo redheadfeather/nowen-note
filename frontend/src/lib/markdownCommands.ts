@@ -9,7 +9,7 @@
  * 本文件不包含 UI，纯编辑逻辑。
  */
 import { EditorView } from "@codemirror/view";
-import { EditorSelection, Line } from "@codemirror/state";
+import { EditorSelection, EditorState, Line } from "@codemirror/state";
 
 // ---------------------------------------------------------------------------
 // 基础工具
@@ -50,6 +50,7 @@ function linesInRange(view: EditorView, range: { from: number; to: number }): Li
  * 例：** 加粗 **  → toggleWrap("**")  选区外扩 2 字符检测已有包裹
  */
 export function toggleWrap(view: EditorView, marker: string, markerEnd = marker): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   if (!view.state.selection.ranges.length) return false;
   const doc = view.state.doc;
 
@@ -119,6 +120,7 @@ export function toggleLinePrefix(
   prefix: string,
   matchers: RegExp[],
 ): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const doc = view.state.doc;
   const changes: { from: number; to: number; insert: string }[] = [];
 
@@ -187,6 +189,7 @@ export function toggleBlockquote(view: EditorView): boolean {
 
 /** 在光标所在位置插入一个独立代码块（前后保留空行） */
 export function toggleCodeBlock(view: EditorView): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const doc = view.state.doc;
   const range = view.state.selection.main;
   const { first, last } = lineRangeOfSelection(view, range);
@@ -227,6 +230,7 @@ export function toggleInlineCode(view: EditorView): boolean {
 
 /** 分割线 */
 export function insertHorizontalRule(view: EditorView): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const doc = view.state.doc;
   const range = view.state.selection.main;
   const line = doc.lineAt(range.from);
@@ -243,6 +247,7 @@ export function insertHorizontalRule(view: EditorView): boolean {
 
 /** 在光标处插入 3x3 GFM 表格 */
 export function insertTable(view: EditorView, rows = 3, cols = 3): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const header = "| " + Array.from({ length: cols }, (_, i) => `列${i + 1}`).join(" | ") + " |";
   const divider = "| " + Array.from({ length: cols }, () => "---").join(" | ") + " |";
   const body = Array.from({ length: rows - 1 }, () =>
@@ -282,6 +287,7 @@ export function insertTable(view: EditorView, rows = 3, cols = 3): boolean {
  *   - 显式传 text="xxx" 的调用方（如附件上传）行为不变。
  */
 export function insertLink(view: EditorView, url = "https://", text?: string): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const doc = view.state.doc;
   const range = view.state.selection.main;
   const selectedText = doc.sliceString(range.from, range.to);
@@ -300,6 +306,7 @@ export function insertLink(view: EditorView, url = "https://", text?: string): b
 
 /** 在光标处插入图片语法（src 为 data URL 或网络 URL） */
 export function insertImage(view: EditorView, src: string, alt = ""): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const doc = view.state.doc;
   const range = view.state.selection.main;
   const line = doc.lineAt(range.from);
@@ -322,6 +329,7 @@ export function insertImage(view: EditorView, src: string, alt = ""): boolean {
 
 /** 在当前选区位置插入/替换文本（AI 助手用） */
 export function replaceSelection(view: EditorView, text: string): boolean {
+  if (view.state.facet(EditorState.readOnly)) return false;
   const range = view.state.selection.main;
   view.dispatch({
     changes: { from: range.from, to: range.to, insert: text },
