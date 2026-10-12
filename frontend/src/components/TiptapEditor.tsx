@@ -55,6 +55,7 @@ import {
 import { publishEditorEditable } from "@/lib/editorEditableStore";
 import { RichTextReadOnlyGuard } from "@/lib/richTextReadOnlyGuard";
 import { EditorRevisionGuard } from "@/lib/editorRevisionGuard";
+import { isEquivalentTiptapDocument } from "@/lib/tiptapDocumentEquality";
 import {
   isMatchingTiptapSaveAck,
   type TiptapSaveAckToken,
@@ -3539,12 +3540,13 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     }
 
     // 自动保存开始时，父组件会先把编辑器刚发出的内容同步回 activeNote。
-    // 同笔记且原始 JSON 已与当前编辑器一致时无需再次修复或 setContent，
+    // 同笔记且 JSON 表示的文档与当前编辑器一致时无需再次修复或 setContent，
+    // 服务端补齐默认属性或调整 JSON 键顺序不应触发整篇替换。
     // 否则会重置斜杠菜单、选区等正在进行的编辑器交互。
     if (
       editor
       && !noteChanged
-      && note.content === JSON.stringify(editor.getJSON())
+      && isEquivalentTiptapDocument(editor.state.doc, note.content)
     ) {
       return;
     }
@@ -3613,7 +3615,7 @@ const TiptapEditor = forwardRef<NoteEditorHandle, TiptapEditorProps>(function Ti
     if (titleRef.current && !isTitleComposingRef.current) {
       titleRef.current.value = note.title;
     }
-  }, [note.id, note.content]);
+  }, [editor, note.id, note.content]);
   //   ^^^^^^^^^^^^^^^^^^^^^^
   //   依赖含 content 的完整语义（更新版）：
   //

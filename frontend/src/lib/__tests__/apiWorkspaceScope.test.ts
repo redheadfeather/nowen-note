@@ -20,7 +20,7 @@ describe("API 工作区参数", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await Promise.all([api.getNotes(), api.getNotebooks(), api.getTags(), api.getNotesWithTag("tag-1"), api.search("测试")]);
+    await Promise.all([api.getNotes(), api.getNotebooks(), api.getTags(), api.getNotesWithTag("tag-1"), api.search("测试"), api.searchNotes("测试")]);
 
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls).toContain("https://note.example.com/api/notes");
@@ -40,7 +40,7 @@ describe("API 工作区参数", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await Promise.all([api.getNotes(), api.getNotebooks(), api.getTags(), api.getNotesWithTag("tag-1")]);
+    await Promise.all([api.getNotes(), api.getNotebooks(), api.getTags(), api.getNotesWithTag("tag-1"), api.searchNotes("10月")]);
 
     const urls = fetchMock.mock.calls.map(([url]) => String(url));
     expect(urls.every((url) => url.includes("workspaceId=workspace-1"))).toBe(true);

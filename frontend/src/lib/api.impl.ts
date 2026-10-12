@@ -1761,6 +1761,8 @@ export const api = {
     if (!query.trim()) return [];
     const params = new URLSearchParams();
     params.set("q", query.trim());
+    const workspaceId = getCurrentWorkspace();
+    if (workspaceId !== "personal") params.set("workspaceId", workspaceId);
     const data = await request<any>(`/search?${params.toString()}`);
     // 后端返回数组或 { items: [...] }，兼容处理
     const items = Array.isArray(data) ? data : (data?.items || []);

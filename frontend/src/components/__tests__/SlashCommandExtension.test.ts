@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Editor } from "@tiptap/react";
+import { Editor, Extension } from "@tiptap/react";
+import { Plugin } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import {
   createSlashExtension,
@@ -38,6 +39,35 @@ afterEach(() => {
 });
 
 describe("SlashCommandExtension", () => {
+  it("keeps the menu open when a desktop drag-handle plugin is registered again", () => {
+    const ctx = createEditor();
+    editors.push(ctx.editor);
+    dispatchTextInput(ctx.editor, "/");
+    ctx.editor.registerPlugin(new Plugin({}));
+    expect(getSlashPluginState(ctx.editor).active).toBe(true);
+    expect(ctx.onDeactivate).not.toHaveBeenCalled();
+    ctx.editor.destroy();
+    expect(ctx.onDeactivate).toHaveBeenCalledTimes(1);
+    editors.pop();
+  });
+  it("keeps a newly inserted slash active when a block receives its stable ID", () => {
+    const blockIds = Extension.create({
+      name: "testBlockIds",
+      addGlobalAttributes: () => [{ types: ["paragraph"], attributes: { blockId: { default: null } } }],
+      addProseMirrorPlugins: () => [new Plugin({ appendTransaction(transactions, _old, state) {
+        if (!transactions.some((tr) => tr.docChanged)) return null;
+        const tr = state.tr;
+        state.doc.descendants((node, pos) => {
+          if (node.type.name === "paragraph" && !node.attrs.blockId) tr.setNodeMarkup(pos, undefined, { ...node.attrs, blockId: `blk_${pos}` });
+        });
+        return tr.docChanged ? tr : null;
+      } })],
+    });
+    const editor = new Editor({ extensions: [StarterKit, blockIds, createSlashExtension(vi.fn(), vi.fn(), vi.fn())], content: "<p></p>" });
+    editors.push(editor);
+    expect(dispatchTextInput(editor, "/")).toBe(true);
+    expect(getSlashPluginState(editor)).toMatchObject({ active: true, from: 1, query: "" });
+  });
   it("opens and fully resets for 20 consecutive command sessions without keydown timers", () => {
     const ctx = createEditor();
     editors.push(ctx.editor);

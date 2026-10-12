@@ -227,6 +227,10 @@ export function createSlashExtension(
             },
           },
           view() {
+            const handleEditorDestroy = () => {
+              if (slashPluginKey.getState(editor.state)?.active) onDeactivate(sourceId);
+            };
+            editor.on("destroy", handleEditorDestroy);
             return {
               update(view, previousEditorState) {
                 const previous = slashPluginKey.getState(previousEditorState) ?? inactiveState();
@@ -245,9 +249,10 @@ export function createSlashExtension(
                 }
               },
               destroy() {
-                if (slashPluginKey.getState(editor.state)?.active) {
-                  onDeactivate(sourceId);
-                }
+                editor.off("destroy", handleEditorDestroy);
+                // Registering another plugin recreates every plugin view while
+                // preserving its state. Only removal ends this slash session.
+                if (!slashPluginKey.getState(editor.state)) onDeactivate(sourceId);
               },
             };
           },
